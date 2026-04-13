@@ -6,3 +6,7 @@ cmds = ["npm install"]
 
 [start]
 cmd = "node --max-old-space-size=384 server.js"
+
+[variables]
+DISABLE_QUEUE = "true"
+NODE_ENV = "production"

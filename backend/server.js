@@ -11,9 +11,22 @@ const Redis = require('ioredis');
 const routeRouter = require('./routes/route');
 const { errorHandler } = require('./middleware/errorHandler');
 const { EventLogger } = require('./services/eventLogger');
-const { initQueue, getQueueMetrics } = require('./services/jobQueue');
 const { getBreakerStats } = require('./services/circuitBreaker');
 const { processRouteCalculation } = require('./controllers/routeController');
+
+// BullMQ is lazy-loaded only when queue is enabled (heavy dependency)
+let initQueue, getQueueMetrics;
+if (!process.env.DISABLE_QUEUE) {
+  try {
+    const jq = require('./services/jobQueue');
+    initQueue = jq.initQueue;
+    getQueueMetrics = jq.getQueueMetrics;
+  } catch (err) {
+    console.warn('BullMQ not available:', err.message);
+  }
+} else {
+  getQueueMetrics = async () => null;
+}
 
 const PORT = process.env.PORT || 3001;
 const NUM_WORKERS = parseInt(process.env.WEB_CONCURRENCY || '0', 10) || os.cpus().length;
@@ -65,7 +78,7 @@ function startServer() {
   app.set('eventLogger', eventLogger);
 
   // ─── Job Queue (BullMQ) — skip on low-memory or no-Redis environments ───
-  if (!process.env.DISABLE_QUEUE && redisUrl) {
+  if (initQueue && redisUrl) {
     try {
       const redisConnection = redisUrl.startsWith('rediss://')
         ? { url: redisUrl, tls: { rejectUnauthorized: false } }
@@ -104,10 +117,10 @@ function startServer() {
   // Routes
   app.use('/api/route', routeRouter);
 
-  // ─── Health check (includes circuit breaker + queue metrics) ───
+  // ─── Health check ───
   app.get('/health', async (req, res) => {
     const redisOk = redis && redis.status === 'ready';
-    const queueMetrics = await getQueueMetrics().catch(() => null);
+    const queueMetrics = getQueueMetrics ? await getQueueMetrics().catch(() => null) : null;
     const breakerStats = getBreakerStats();
 
     res.status(200).json({
@@ -147,7 +160,15 @@ function startServer() {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  app.listen(PORT, () => {
-    console.log(`Worker ${process.pid} listening on port ${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Worker ${process.pid} listening on 0.0.0.0:${PORT}`);
   });
 }
+
+// Top-level error handler — prevent silent crashes
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection:', err);
+});
