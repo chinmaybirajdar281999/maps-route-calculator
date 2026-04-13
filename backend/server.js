@@ -49,11 +49,21 @@ if (cluster.isPrimary && USE_CLUSTER) {
 }
 
 async function startServer() {
-  console.log(`[startup] Node ${process.version}, PID ${process.pid}, PORT=${process.env.PORT || 3001}`);
-  console.log(`[startup] DISABLE_QUEUE=${process.env.DISABLE_QUEUE}, RAILWAY=${!!process.env.RAILWAY_ENVIRONMENT}`);
+  console.log(`[startup] Node ${process.version}, PID ${process.pid}`);
+  console.log(`[startup] PORT=${process.env.PORT || 3001}, DISABLE_QUEUE=${process.env.DISABLE_QUEUE}`);
+  console.log(`[startup] RAILWAY=${!!process.env.RAILWAY_ENVIRONMENT}`);
   console.log(`[startup] REDIS_URL=${process.env.REDIS_URL ? 'set' : 'unset'}, DATABASE_URL=${process.env.DATABASE_URL ? 'set' : 'unset'}`);
 
   const app = express();
+
+  // ─── Request logger (first middleware — logs every incoming request) ───
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      console.log(`[http] ${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - start}ms`);
+    });
+    next();
+  });
 
   // ─── Root health check (Railway probes this) ───
   app.get('/', (req, res) => res.json({ status: 'ok', service: 'maps-route-calculator' }));
@@ -173,8 +183,15 @@ async function startServer() {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Worker ${process.pid} listening on 0.0.0.0:${PORT}`);
+  return new Promise((resolve, reject) => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`[startup] READY — listening on 0.0.0.0:${PORT}`);
+      resolve(server);
+    });
+    server.on('error', (err) => {
+      console.error('[startup] LISTEN FAILED:', err);
+      reject(err);
+    });
   });
 }
 

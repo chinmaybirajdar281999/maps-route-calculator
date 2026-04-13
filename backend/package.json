@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "test": "jest --verbose",
-    "start": "node server.js"
+    "start": "node --max-old-space-size=384 server.js"
   },
   "keywords": [],
   "author": "",
