@@ -45,7 +45,7 @@ function initQueue(redisConnection, processFn) {
     },
     {
       connection: redisConnection,
-      concurrency: 5,     // process up to 5 jobs in parallel per worker
+      concurrency: 2,     // keep low for memory-constrained environments
       limiter: {
         max: 20,           // max 20 jobs per duration window
         duration: 60000,   // 1 minute

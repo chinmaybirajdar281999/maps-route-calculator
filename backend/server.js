@@ -16,10 +16,11 @@ const { getBreakerStats } = require('./services/circuitBreaker');
 const { processRouteCalculation } = require('./controllers/routeController');
 
 const PORT = process.env.PORT || 3001;
-const NUM_WORKERS = process.env.WEB_CONCURRENCY || os.cpus().length;
+const NUM_WORKERS = parseInt(process.env.WEB_CONCURRENCY || '0', 10) || os.cpus().length;
+const USE_CLUSTER = process.env.NODE_ENV === 'production' && NUM_WORKERS > 1 && !process.env.RAILWAY_ENVIRONMENT;
 
-/* ─── Cluster: fork one worker per CPU core ─── */
-if (cluster.isPrimary && process.env.NODE_ENV === 'production') {
+/* ─── Cluster: fork workers (disabled on Railway / single-CPU hosts) ─── */
+if (cluster.isPrimary && USE_CLUSTER) {
   console.log(`Primary ${process.pid} forking ${NUM_WORKERS} workers`);
   for (let i = 0; i < NUM_WORKERS; i++) cluster.fork();
 
@@ -48,14 +49,15 @@ function startServer() {
   const eventLogger = new EventLogger(redis);
   app.set('eventLogger', eventLogger);
 
-  // ─── Job Queue (BullMQ) ───
-  const redisConnection = process.env.REDIS_URL
-    ? { url: process.env.REDIS_URL }
-    : { host: process.env.REDIS_HOST || 'localhost', port: parseInt(process.env.REDIS_PORT || '6379', 10) };
-  initQueue(redisConnection, async (jobData) => {
-    // Worker callback — uses the same processRouteCalculation logic
-    return processRouteCalculation(jobData, redis, eventLogger);
-  });
+  // ─── Job Queue (BullMQ) — skip on low-memory environments ───
+  if (!process.env.DISABLE_QUEUE) {
+    const redisConnection = process.env.REDIS_URL
+      ? { url: process.env.REDIS_URL }
+      : { host: process.env.REDIS_HOST || 'localhost', port: parseInt(process.env.REDIS_PORT || '6379', 10) };
+    initQueue(redisConnection, async (jobData) => {
+      return processRouteCalculation(jobData, redis, eventLogger);
+    });
+  }
 
   // Security middleware
   app.use(helmet());
