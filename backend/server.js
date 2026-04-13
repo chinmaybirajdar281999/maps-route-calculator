@@ -42,35 +42,48 @@ if (cluster.isPrimary && USE_CLUSTER) {
     cluster.fork();
   });
 } else {
-  startServer();
+  startServer().catch(err => {
+    console.error('FATAL: startServer failed:', err);
+    process.exit(1);
+  });
 }
 
-function startServer() {
+async function startServer() {
+  console.log(`[startup] Node ${process.version}, PID ${process.pid}, PORT=${process.env.PORT || 3001}`);
+  console.log(`[startup] DISABLE_QUEUE=${process.env.DISABLE_QUEUE}, RAILWAY=${!!process.env.RAILWAY_ENVIRONMENT}`);
+  console.log(`[startup] REDIS_URL=${process.env.REDIS_URL ? 'set' : 'unset'}, DATABASE_URL=${process.env.DATABASE_URL ? 'set' : 'unset'}`);
+
   const app = express();
+
+  // ─── Root health check (Railway probes this) ───
+  app.get('/', (req, res) => res.json({ status: 'ok', service: 'maps-route-calculator' }));
 
   // Redis client for caching (optional — app works without it)
   let redis = null;
   const redisUrl = process.env.REDIS_URL;
-  try {
-    const redisOpts = {
-      retryStrategy: (times) => times > 5 ? null : Math.min(times * 200, 3000),
-      maxRetriesPerRequest: 1,
-      enableReadyCheck: true,
-      lazyConnect: true,
-    };
-    if (redisUrl) {
-      // Railway Redis may use rediss:// (TLS)
-      if (redisUrl.startsWith('rediss://')) redisOpts.tls = { rejectUnauthorized: false };
-      redis = new Redis(redisUrl, redisOpts);
-    } else if (process.env.REDIS_HOST) {
-      redis = new Redis({ host: process.env.REDIS_HOST, port: process.env.REDIS_PORT || 6379, ...redisOpts });
-    } else {
-      redis = new Redis({ host: 'localhost', port: 6379, ...redisOpts });
+  if (redisUrl || !process.env.RAILWAY_ENVIRONMENT) {
+    try {
+      const redisOpts = {
+        retryStrategy: (times) => times > 5 ? null : Math.min(times * 200, 3000),
+        maxRetriesPerRequest: 1,
+        enableReadyCheck: true,
+        lazyConnect: true,
+      };
+      if (redisUrl) {
+        if (redisUrl.startsWith('rediss://')) redisOpts.tls = { rejectUnauthorized: false };
+        redis = new Redis(redisUrl, redisOpts);
+      } else if (process.env.REDIS_HOST) {
+        redis = new Redis({ host: process.env.REDIS_HOST, port: process.env.REDIS_PORT || 6379, ...redisOpts });
+      } else {
+        redis = new Redis({ host: 'localhost', port: 6379, ...redisOpts });
+      }
+      redis.connect().catch(err => console.warn('[startup] Redis not available:', err.message));
+      redis.on('error', (err) => console.warn('Redis error:', err.message));
+    } catch (err) {
+      console.warn('[startup] Redis init failed, running without cache:', err.message);
     }
-    redis.connect().catch(err => console.warn('Redis not available:', err.message));
-    redis.on('error', (err) => console.warn('Redis error:', err.message));
-  } catch (err) {
-    console.warn('Redis init failed, running without cache:', err.message);
+  } else {
+    console.log('[startup] Skipping Redis on Railway (no REDIS_URL)');
   }
 
   // ─── Event Logger (Redis Streams) ───
