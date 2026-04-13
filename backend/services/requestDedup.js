@@ -18,8 +18,8 @@ const LOCK_TTL_S = 20;        // lock auto-expires after 20 s (safety net)
  * @returns {boolean} true if this request should do the work, false if another is already doing it.
  */
 async function acquireLock(redis, cacheKey) {
+  if (!redis) return true; // no redis = always compute
   const lockKey = `lock:${cacheKey}`;
-  // SET NX EX — atomic "set if not exists" with expiry
   const result = await redis.set(lockKey, process.pid.toString(), 'EX', LOCK_TTL_S, 'NX');
   return result === 'OK';
 }
@@ -28,6 +28,7 @@ async function acquireLock(redis, cacheKey) {
  * Release the dedup lock after the work is done.
  */
 async function releaseLock(redis, cacheKey) {
+  if (!redis) return;
   const lockKey = `lock:${cacheKey}`;
   await redis.del(lockKey);
 }
@@ -37,6 +38,7 @@ async function releaseLock(redis, cacheKey) {
  * @returns {object|null} cached result, or null if timed out.
  */
 async function waitForResult(redis, cacheKey) {
+  if (!redis) return null;
   const start = Date.now();
   while (Date.now() - start < MAX_WAIT_MS) {
     const cached = await redis.get(cacheKey);

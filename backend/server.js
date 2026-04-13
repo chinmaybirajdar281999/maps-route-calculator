@@ -35,28 +35,47 @@ if (cluster.isPrimary && USE_CLUSTER) {
 function startServer() {
   const app = express();
 
-  // Redis client for caching
-  const redisOpts = {
-    retryStrategy: (times) => Math.min(times * 50, 2000),
-    maxRetriesPerRequest: 3,
-    enableReadyCheck: true,
-  };
-  const redis = process.env.REDIS_URL
-    ? new Redis(process.env.REDIS_URL, redisOpts)
-    : new Redis({ host: process.env.REDIS_HOST || 'localhost', port: process.env.REDIS_PORT || 6379, ...redisOpts });
+  // Redis client for caching (optional — app works without it)
+  let redis = null;
+  const redisUrl = process.env.REDIS_URL;
+  try {
+    const redisOpts = {
+      retryStrategy: (times) => times > 5 ? null : Math.min(times * 200, 3000),
+      maxRetriesPerRequest: 1,
+      enableReadyCheck: true,
+      lazyConnect: true,
+    };
+    if (redisUrl) {
+      // Railway Redis may use rediss:// (TLS)
+      if (redisUrl.startsWith('rediss://')) redisOpts.tls = { rejectUnauthorized: false };
+      redis = new Redis(redisUrl, redisOpts);
+    } else if (process.env.REDIS_HOST) {
+      redis = new Redis({ host: process.env.REDIS_HOST, port: process.env.REDIS_PORT || 6379, ...redisOpts });
+    } else {
+      redis = new Redis({ host: 'localhost', port: 6379, ...redisOpts });
+    }
+    redis.connect().catch(err => console.warn('Redis not available:', err.message));
+    redis.on('error', (err) => console.warn('Redis error:', err.message));
+  } catch (err) {
+    console.warn('Redis init failed, running without cache:', err.message);
+  }
 
   // ─── Event Logger (Redis Streams) ───
   const eventLogger = new EventLogger(redis);
   app.set('eventLogger', eventLogger);
 
-  // ─── Job Queue (BullMQ) — skip on low-memory environments ───
-  if (!process.env.DISABLE_QUEUE) {
-    const redisConnection = process.env.REDIS_URL
-      ? { url: process.env.REDIS_URL }
-      : { host: process.env.REDIS_HOST || 'localhost', port: parseInt(process.env.REDIS_PORT || '6379', 10) };
-    initQueue(redisConnection, async (jobData) => {
-      return processRouteCalculation(jobData, redis, eventLogger);
-    });
+  // ─── Job Queue (BullMQ) — skip on low-memory or no-Redis environments ───
+  if (!process.env.DISABLE_QUEUE && redisUrl) {
+    try {
+      const redisConnection = redisUrl.startsWith('rediss://')
+        ? { url: redisUrl, tls: { rejectUnauthorized: false } }
+        : { url: redisUrl };
+      initQueue(redisConnection, async (jobData) => {
+        return processRouteCalculation(jobData, redis, eventLogger);
+      });
+    } catch (err) {
+      console.warn('Job queue init failed:', err.message);
+    }
   }
 
   // Security middleware
@@ -87,15 +106,15 @@ function startServer() {
 
   // ─── Health check (includes circuit breaker + queue metrics) ───
   app.get('/health', async (req, res) => {
-    const redisOk = redis.status === 'ready';
+    const redisOk = redis && redis.status === 'ready';
     const queueMetrics = await getQueueMetrics().catch(() => null);
     const breakerStats = getBreakerStats();
 
-    res.status(redisOk ? 200 : 503).json({
+    res.status(200).json({
       status: redisOk ? 'ok' : 'degraded',
       worker: process.pid,
       uptime: process.uptime(),
-      redis: redis.status,
+      redis: redis ? redis.status : 'disabled',
       circuitBreaker: breakerStats,
       queue: queueMetrics,
       timestamp: new Date().toISOString(),
@@ -122,7 +141,7 @@ function startServer() {
   const shutdown = () => {
     console.log(`Worker ${process.pid}: shutting down gracefully`);
     eventLogger.destroy();
-    redis.disconnect();
+    if (redis) redis.disconnect();
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
