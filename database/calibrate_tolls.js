@@ -8,7 +8,7 @@
 const https = require('https');
 const { Client } = require('pg');
 
-const MAPBOX_TOKEN = 'process.env.MAPBOX_ACCESS_TOKEN';
+const MAPBOX_TOKEN = process.env.MAPBOX_ACCESS_TOKEN || '';
 
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371;
